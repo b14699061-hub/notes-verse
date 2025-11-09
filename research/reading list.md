@@ -1,2 +1,6 @@
 
-https://core.telegram.org/mtporto
+1. https://core.telegram.org/mtproto
+2. https://core.telegram.org/mtproto/description
+3. https://core.telegram.org/mtproto/TL
+4. https://core.telegram.org/mtproto/auth_key
+5. 
