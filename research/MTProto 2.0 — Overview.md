@@ -108,7 +108,6 @@ padding (12..1024 bytes)
 
 ![Image](https://ars.els-cdn.com/content/image/1-s2.0-S0167404822004643-gr2.jpg)
 
-![Image](https://ars.els-cdn.com/content/image/1-s2.0-S0167404822004643-gr1.jpg)
 
 ## 4. Cryptography & Key Derivation
 
