@@ -9,15 +9,11 @@
 - Version 2.0 is the current standard; version 1.0 is deprecated. 
     
 - Key changes in v2.0 vs v1.0:
-    
     - Use of SHA-256 instead of SHA-1. 
-        
     - Padding bytes are included in msg_key computation. 
-        
     - msg_key depends on part of auth_key as well. 
-        
     - Padding length changed: 12..1024 bytes instead of 0..15. 
-        
+
 
 ## 2. Terminology
 
