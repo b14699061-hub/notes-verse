@@ -122,7 +122,7 @@ padding (12..1024 bytes)
 
 Given `auth_key` and `msg_key`, compute:
 
-```
+```c
 msg_key_large = SHA256(substr(auth_key, 88 + x, 32) + plaintext + padding)
 msg_key       = substr(msg_key_large, 8, 16)
 
