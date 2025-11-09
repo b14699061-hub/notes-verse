@@ -44,14 +44,14 @@
 
 ### Server Salt
 
-- A random 64-bit number changed by the server every ~30 minutes (per session). ([Telegram Core](https://core.telegram.org/mtproto/description "Mobile Protocol: Detailed Description"))
+- A random 64-bit number changed by the server every ~30 minutes (per session). 
     
 - Helps protect against replay attacks and clock-adjustment tricks. ([Telegram Core](https://core.telegram.org/mtproto/description "Mobile Protocol: Detailed Description"))
     
 
 ### Message Identifier (`msg_id`)
 
-- 64-bit number, time-dependent, used to uniquely identify a message in a session. ([Telegram Core](https://core.telegram.org/mtproto/description "Mobile Protocol: Detailed Description"))
+- 64-bit number, time-dependent, used to uniquely identify a message in a session. 
     
 - Client message IDs are divisible by 4; server ones have specific parity rules. ([Telegram Core](https://core.telegram.org/mtproto/description "Mobile Protocol: Detailed Description"))
     
