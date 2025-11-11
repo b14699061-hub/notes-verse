@@ -198,7 +198,6 @@ Where _x = 0_ for client→server messages, _x = 8_ for server→client.
 
 ![Image](https://ars.els-cdn.com/content/image/1-s2.0-S0167404822004643-gr2.jpg)
 
-![Image](https://core.telegram.org/file/811140746/2/CzMyJPVnPo8.81605/c2310d6ede1a5e220f)
 
 ## 9. Things to Explore Further
 
