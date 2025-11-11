@@ -18,18 +18,15 @@
 ### Authorization Key (`auth_key`)
 
 - A 2048-bit key shared between client and server, generated via a Diffie-Hellman exchange on the client side. 
-    
-- Never transmitted directly over the network once established. 
-    
+
+- Never transmitted directly over the network once established.     
 
 ### Key Identifier (`auth_key_id`)
 
 - The 64 lower-order bits of the SHA-1 hash of the auth_key. 
-    
-- Indicates which key was used to encrypt a message.
-    
+- Indicates which key was used to encrypt a message.    
 - In special registration messages a value of zero means “no encryption”. 
-    
+
 
 ### Session
 
