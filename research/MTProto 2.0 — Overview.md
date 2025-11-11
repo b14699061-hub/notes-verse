@@ -36,18 +36,18 @@
 ### Server Salt
 
 - A random 64-bit number changed by the server every ~30 minutes (per session). 
-    
+
 - Helps protect against replay attacks and clock-adjustment tricks. 
-    
+
 
 ### Message Identifier (`msg_id`)
 
 - 64-bit number, time-dependent, used to uniquely identify a message in a session. 
-    
+
 - Client message IDs are divisible by 4; server ones have specific parity rules. 
-    
+
 - Must increase monotonically for a given session. 
-    
+
 
 ### Message Sequence Number (`msg_seqno`)
 
@@ -109,9 +109,9 @@ padding (12..1024 bytes)
 ### msg_key
 
 - In v2.0: the _middle_ 128 bits of `SHA-256(auth_key_fragment + plaintext + padding)` where a 32-byte fragment of auth_key is prepended. 
-    
+
 - In v1.0: lower 128 bits of SHA-1 of the plaintext (without padding) — deprecated. 
-    
+
 
 ### Deriving `aes_key` and `aes_iv`
 
