@@ -1,19 +1,13 @@
 # RSA_PAD — MTProto Deep Dive
 
-> Rigorous, mathematical, and intuitive explanation of the RSA_PAD construction used by MTProto (authorization key generation). Formatted for Obsidian (MathJax + Markdown).
-
----
-
 ## 1. Overview (purpose)
 
 `RSA_PAD(data, server_public_key)` is the custom padding + encapsulation that MTProto uses to transmit the client's `p_q_inner_data` to the server securely under the server's RSA public key. Its goals are:
 
 1. Confidentiality of `data` under RSA encryption.
-    
 2. Integrity binding of `data` to the ephemeral `temp_key` via a hash.
-    
 3. Producing a 2048-bit integer suitable for RSA public-key operation (i.e. an integer in the range ([0, N-1]), where (N) is the RSA modulus).
-    
+
 
 MTProto implements a specific sequence of padding, hashing, symmetric encryption (AES256-IGE), and final RSA modular exponentiation. The canonical specification (core.telegram.org) gives the exact byte-level algorithm used by clients.
 
