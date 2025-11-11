@@ -91,49 +91,6 @@ Secrets are now exchanged under $\mathbf{new\_nonce}$-derived encryption.
 
 ---
 
-## 🔒 MTProto `RSA_PAD` Protocol
-
-## 1. Formal Specification (Client Side)
-
-Lc
-## 2. Decryption and Verification (Server Side)
-
-The server receives the ciphertext $c$ and performs RSA decryption, followed by symmetric decryption and a mandatory integrity check.
-
-|**Step**|**Operation (Symbolic)**|**Mathematical Derivation/Check**|**Security Rationale**|
-|---|---|---|---|
-|**1. RSA Decrypt**|$m := c^{d} \bmod N$. Parse $M = \mathrm{BEbytes}(m)$.|$M = t' ,||
-|**2. Key Recovery**|$S := \mathrm{SHA256}(C)$<br><br>  <br><br>$t := t' \oplus S$|$t = (t \oplus S) \oplus S$.|Recovers the original symmetric key $t$. The XOR binding ensures $t$ is consistent with the received $C$.|
-|**3. Symmetric Decrypt**|$X := \mathrm{AES256\_IGE}^{-1}_{t,IV=0}(C)$|$X = P_{\mathrm{rev}} ,||
-|**4. Payload Reconstruct**|$P := \operatorname{rev}(P_{\mathrm{rev}})$|$P = D ,||
-|**5. Integrity Check**|$\text{Verify } H \stackrel{?}{=} \mathrm{SHA256}\bigl(t ,||, P\bigr)$|
-
----
-
-## 3. Concise Mathematical Summary
-
-The entire `RSA_PAD` procedure for a plaintext $D$ of $|D| \le 144$ bytes is summarized as:
-
-1. **Input:** $D$.
-    
-2. **Padding:** $P = D \,||\, \text{pad}$ ($|P|=192$).
-    
-3. **Reverse:** $P_{\mathrm{rev}} = \operatorname{rev}(P)$.
-    
-4. **Key & Hash:** $t \xleftarrow{\$} \{0,1\}^{256}$, $H = \mathrm{SHA256}(t \,||\, P)$.
-    
-5. **Symmetric Block:** $X = P_{\mathrm{rev}} \,||\, H$.
-    
-6. **Ciphertext:** $C = \mathrm{AES256\_IGE}_{t,0}(X)$.
-    
-7. **Masked Key:** $t' = t \oplus \mathrm{SHA256}(C)$.
-    
-8. **RSA Input:** $M = t' \,||\, C$.
-    
-9. **Output (if $\mathrm{BEint}(M) < N$):** $c = \mathrm{BEint}(M)^{e} \bmod N$.
-    
-
-The security relies on **RSA** for key encapsulation ($t$), and the **SHA256** bindings (the integrity hash $H$ and the key mask $t'$) for strong anti-malleability and authentication of the symmetric envelope.
 ## 🧩 Derived Secrets & Session Identifiers
 
 The **master key** is used to derive secondary secrets for message integrity and routing.
