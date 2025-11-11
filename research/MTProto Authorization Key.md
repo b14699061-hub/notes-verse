@@ -95,24 +95,7 @@ Secrets are now exchanged under $\mathbf{new\_nonce}$-derived encryption.
 
 ## 1. Formal Specification (Client Side)
 
-Let $D$ be the TL-serialized data to encrypt (max $|D| \le 144$ bytes).
-
-| **Step**                 | **Operation (Symbolic)**                                      |
-| ------------------------ | ------------------------------------------------------------- |
-| **1. Padding**           | P := D \|\| Pad                                               |
-| **2. Reverse**           | $P_{\mathrm{rev}} := \operatorname{rev}(P)$                   |
-| **3. Key**               | $t \xleftarrow{\$} \{0,1\}^{256}$                             |
-| **4. Integrity Hash**    | $H := \mathrm{SHA256}\bigl(t ,                                |
-| **5. Plaintext Block**   | $X := P_{\mathrm{rev}} ,                                      |
-| **6. Symmetric Encrypt** | $C := \mathrm{AES256\_IGE}_{t,IV=0}(X)$                       |
-| **7. Ciphertext Hash**   | $S := \mathrm{SHA256}(C)$                                     |
-| **8. Masked Key**        | $t' := t \oplus S$                                            |
-| **9. RSA Plaintext**     | $M := t' ,                                                    |
-| **10. Check Modulus**    | $m = \mathrm{BEint}(M)$. If $m \ge N$: **RETRY from Step 3.** |
-| **11. RSA Encrypt**      | $\mathbf{encrypted\_data} := c := m^{e} \bmod N$              |
-
----
-
+Lc
 ## 2. Decryption and Verification (Server Side)
 
 The server receives the ciphertext $c$ and performs RSA decryption, followed by symmetric decryption and a mandatory integrity check.
