@@ -97,19 +97,19 @@ Secrets are now exchanged under $\mathbf{new\_nonce}$-derived encryption.
 
 Let $D$ be the TL-serialized data to encrypt (max $|D| \le 144$ bytes).
 
-| **Step**                 | **Operation (Symbolic)**                                      | **Size/Derivation**    | **Intuition/Rationale**                                                                          |
-| ------------------------ | ------------------------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------ |
-| **1. Padding**           | $P := D ,                                                     |                        | , \text{pad}$                                                                                    |
-| **2. Reverse**           | $P_{\mathrm{rev}} := \operatorname{rev}(P)$                   | $                      | P_{\mathrm{rev}}                                                                                 |
-| **3. Key**               | $t \xleftarrow{\$} \{0,1\}^{256}$                             | $                      | t                                                                                                |
-| **4. Integrity Hash**    | $H := \mathrm{SHA256}\bigl(t ,                                |                        | , P\bigr)$                                                                                       |
-| **5. Plaintext Block**   | $X := P_{\mathrm{rev}} ,                                      |                        | , H$                                                                                             |
-| **6. Symmetric Encrypt** | $C := \mathrm{AES256\_IGE}_{t,IV=0}(X)$                       | $                      | C                                                                                                |
-| **7. Ciphertext Hash**   | $S := \mathrm{SHA256}(C)$                                     | $                      | S                                                                                                |
-| **8. Masked Key**        | $t' := t \oplus S$                                            | $                      | t'                                                                                               |
-| **9. RSA Plaintext**     | $M := t' ,                                                    |                        | , C$                                                                                             |
-| **10. Check Modulus**    | $m = \mathrm{BEint}(M)$. If $m \ge N$: **RETRY from Step 3.** | $m < N$ (RSA Modulus). | RSA requirement: plaintext integer must be strictly less than the modulus for inversion to hold. |
-| **11. RSA Encrypt**      | $\mathbf{encrypted\_data} := c := m^{e} \bmod N$              | $                      | c                                                                                                |
+| **Step**                 | **Operation (Symbolic)**                                      |
+| ------------------------ | ------------------------------------------------------------- |
+| **1. Padding**           | P := D \|\| Pad                                               |
+| **2. Reverse**           | $P_{\mathrm{rev}} := \operatorname{rev}(P)$                   |
+| **3. Key**               | $t \xleftarrow{\$} \{0,1\}^{256}$                             |
+| **4. Integrity Hash**    | $H := \mathrm{SHA256}\bigl(t ,                                |
+| **5. Plaintext Block**   | $X := P_{\mathrm{rev}} ,                                      |
+| **6. Symmetric Encrypt** | $C := \mathrm{AES256\_IGE}_{t,IV=0}(X)$                       |
+| **7. Ciphertext Hash**   | $S := \mathrm{SHA256}(C)$                                     |
+| **8. Masked Key**        | $t' := t \oplus S$                                            |
+| **9. RSA Plaintext**     | $M := t' ,                                                    |
+| **10. Check Modulus**    | $m = \mathrm{BEint}(M)$. If $m \ge N$: **RETRY from Step 3.** |
+| **11. RSA Encrypt**      | $\mathbf{encrypted\_data} := c := m^{e} \bmod N$              |
 
 ---
 
