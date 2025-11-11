@@ -5,9 +5,7 @@
 ## 1. What it is
 
 - A protocol for client-server encryption (cloud chats) used by Telegram’s clients. 
-    
-- Version 2.0 is the current standard; version 1.0 is deprecated. 
-    
+- Version 2.0 is the current standard; version 1.0 is deprecated.
 - Key changes in v2.0 vs v1.0:
     - Use of SHA-256 instead of SHA-1. 
     - Padding bytes are included in msg_key computation. 
