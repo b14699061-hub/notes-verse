@@ -1,27 +1,13 @@
 # Telegram Request Callback Flow: Native to Java
-
-## Overview
-
-This document explains how Telegram's MTProto request/response system bridges from native C++ code (where network I/O happens) to Java callbacks (where application logic processes results). The key mechanism is the `onCompleteRequestCallback` stored in each `Request` object.
-
----
-
   
 
 ## Table of Contents
 
-  
-
 1. [[#What is onCompleteRequestCallback|What is `onCompleteRequestCallback`?]]
-
 2. [[#Request Lifecycle|Request Lifecycle]]
-
 3. [[#Complete Flow Diagram|Complete Flow Diagram]]
-
 4. [[#Step-by-Step Flow|Step-by-Step Flow]]
-
 5. [[#Thread Context|Thread Context]]
-
 6. [[#Code References|Code References]]
 
   
