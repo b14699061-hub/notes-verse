@@ -59,25 +59,29 @@ A dedicated network thread dequeues the `Request` and hands it to the MTProto 
 
 ```mermaid
 graph TD
-    subgraph Encrypted Packet (Sent over TCP)
+
+    %% --- Encrypted Packet Wrapper ---
+    subgraph encrypted_packet["Encrypted Packet (Sent over TCP)"]
         A[Auth Key ID (8 bytes)]
         B[Message Key (16 bytes)]
         C[Encrypted Data]
     end
 
-    subgraph " "
-        direction LR
-        subgraph Encrypted Data (Payload for AES-256-IGE)
-            D[Server Salt (8 bytes)]
-            E[Session ID (8 bytes)]
-            F[Message ID (8 bytes)]
-            G[Sequence Number (4 bytes)]
-            H[Message Data Length (4 bytes)]
-            I[Message Data (The serialized TLObject)]
-            J[Padding (0-15 bytes)]
-        end
+    %% --- Encrypted Data Payload ---
+    subgraph encrypted_data["Encrypted Data (Payload for AES-256-IGE)"]
+        D[Server Salt (8 bytes)]
+        E[Session ID (8 bytes)]
+        F[Message ID (8 bytes)]
+        G[Sequence Number (4 bytes)]
+        H[Message Data Length (4 bytes)]
+        I[Message Data (TLObject)]
+        J[Padding (0–15 bytes)]
     end
+
+    %% Flow
     A --> B --> C
+    C --> encrypted_data
+
 ```
 
 **Breakdown of the components:**
