@@ -1,14 +1,24 @@
-# Telegram Request Callback Flow: Native to Java
+# NotificationCenter `listen` & ConnectionsManager – Flow and Patterns
+
   
 
-## Table of Contents
+## Overview
 
-1. [[#What is onCompleteRequestCallback|What is `onCompleteRequestCallback`?]]
-2. [[#Request Lifecycle|Request Lifecycle]]
-3. [[#Complete Flow Diagram|Complete Flow Diagram]]
-4. [[#Step-by-Step Flow|Step-by-Step Flow]]
-5. [[#Thread Context|Thread Context]]
-6. [[#Code References|Code References]]
+  
+
+This note explains, from a software engineer’s perspective:
+
+  
+
+- How `NotificationCenter.listen(...)` works in `NotificationCenter.java`
+
+- How `ConnectionsManager.java` *publishes* events via `NotificationCenter`
+
+- The overall flow, mechanism, and design patterns behind Telegram’s in‑process event bus
+
+  
+
+Although `ConnectionsManager` does **not** directly call `NotificationCenter.listen(...)`, it **emits** events that UI components **consume** using `listen(...)`, `addObserver(...)`, or helper wrappers like `listenEmojiLoading(...)`. Together, these form a decoupled pub/sub system.
 
   
 
@@ -16,87 +26,145 @@
 
   
 
-## What is `onCompleteRequestCallback`?
+## 1. NotificationCenter as an Event Bus
 
   
 
-### Type Definition
+### 1.1 Core Concepts
 
   
 
-`onCompleteRequestCallback` is a C++ `std::function` callback stored in each `Request` object. It's invoked when a server response arrives (success or error).
+- `NotificationCenter` is a **per‑account event bus** plus a **global event bus**.
+
+- Events are represented as **integer IDs** (e.g. `didUpdateConnectionState`, `emojiLoaded`, etc.).
+
+- Observers implement the `NotificationCenterDelegate` interface and are registered/unregistered per event ID.
+
+- `postNotificationName(...)` broadcasts an event (with optional arguments) to all observers.
 
   
 
-```cpp
+Key parts:
 
-// Defines.h
+  
 
-typedef std::function<void(
+```java
 
-TLObject *response, // The deserialized TLObject result
+// NotificationCenter.java
 
-TL_error *error, // Error object if request failed
+public class NotificationCenter {
 
-int32_t networkType, // Network type (WiFi, mobile, etc.)
+private final SparseArray<ArrayList<NotificationCenterDelegate>> observers = new SparseArray<>();
 
-int64_t responseTime, // Timestamp when response was received
+...
 
-int64_t msgId, // Message ID of the response
+public interface NotificationCenterDelegate {
 
-int32_t dcId // Datacenter ID that sent the response
+void didReceivedNotification(int id, int account, Object... args);
 
-)> onCompleteFunc;
+}
+
+  
+
+@UiThread
+
+public static NotificationCenter getInstance(int num) { ... } // per-account bus
+
+  
+
+@UiThread
+
+public static NotificationCenter getGlobalInstance() { ... } // global bus
+
+}
 
 ```
 
   
 
-### Storage Location
+This is essentially an **Observer pattern** implementation, specialized for a high‑cardinality set of event types.
 
   
 
-Each `Request` object holds this callback:
+---
 
   
 
-```cpp
+## 2. `NotificationCenter.listen(...)` – View‑Scoped Observation
 
-// Request.h
+  
 
-class Request {
+### 2.1 Implementation
 
-// ... other fields ...
+  
 
-onCompleteFunc onCompleteRequestCallback; // ← Stored here
+`listen(...)` is a **convenience API** that:
 
-// ... other callbacks ...
+  
+
+- Wraps a raw `NotificationCenterDelegate` and a `View`
+
+- Automatically **adds** the observer when the `View` is attached
+
+- Automatically **removes** the observer when the `View` is detached
+
+- Returns a `Runnable` that can be called to manually stop listening
+
+  
+
+```java
+
+// NotificationCenter.java
+
+public Runnable listen(View view, final int id, final Utilities.Callback<Object[]> callback) {
+
+if (view == null || callback == null) {
+
+return () -> {};
+
+}
+
+final NotificationCenterDelegate delegate = (_id, account, args) -> {
+
+if (_id == id) {
+
+callback.run(args);
+
+}
 
 };
 
-```
+final View.OnAttachStateChangeListener viewListener = new View.OnAttachStateChangeListener() {
+
+@Override
+
+public void onViewAttachedToWindow(View view) {
+
+addObserver(delegate, id);
+
+}
+
+@Override
+
+public void onViewDetachedFromWindow(View view) {
+
+removeObserver(delegate, id);
+
+}
+
+};
+
+view.addOnAttachStateChangeListener(viewListener);
 
   
 
-### When It's Set
+return () -> {
 
-  
+view.removeOnAttachStateChangeListener(viewListener);
 
-The callback is assigned when a request is created:
+removeObserver(delegate, id);
 
-  
-
-```cpp
-
-// Request.cpp
-
-Request::Request(..., onCompleteFunc completeFunc, ...) {
-
-// ...
-
-onCompleteRequestCallback = completeFunc; // ← Assigned here
-
-// ...
+};
 
 }
 
@@ -104,61 +172,247 @@ onCompleteRequestCallback = completeFunc; // ← Assigned here
 
   
 
-### For Java-Initiated Requests
+### 2.2 Behavior & Intent
 
   
 
-When Java calls `sendRequest()` via JNI, a lambda is created that marshals the response back to Java:
+- The **delegate** filters events on `_id == id`, then forwards `args` to the provided `callback`.
+
+- `View.OnAttachStateChangeListener` ensures observers are:
+
+- Registered **only** while the view is part of the view hierarchy.
+
+- Automatically cleaned up when the view is detached (avoiding leaks).
+
+- The returned `Runnable` gives you **manual control** to unsubscribe early (e.g. when a dialog closes).
 
   
 
-```cpp
+This is a lightweight **lifecycle‑aware observer** wrapper:
 
-// TgNetWrapper.cpp
+  
 
-ConnectionsManager::getInstance(instanceNum).sendRequest(request,
+> *Tie the lifespan of your event subscription to the lifespan of a UI view, without repeating boilerplate add/remove calls.*
 
-([instanceNum, token](TLObject *response, TL_error *error, ...) {
+  
 
-// Convert C++ types to JNI types
+---
 
-jlong ptr = 0;
+  
 
-jint errorCode = 0;
+## 3. NotificationCenter Dispatch – How Events Travel
 
-jstring errorText = nullptr;
+  
 
-if (resp != nullptr) {
+### 3.1 Adding / Removing Observers
 
-ptr = (jlong) resp->response.get();
+  
 
-} else if (error != nullptr) {
+Raw observer management:
 
-errorCode = error->code;
+  
 
-errorText = jniEnv[instanceNum]->NewStringUTF(error->text.c_str());
+```java
+
+public void addObserver(NotificationCenterDelegate observer, int id) {
+
+if (BuildVars.DEBUG_VERSION) {
+
+if (Thread.currentThread() != ApplicationLoader.applicationHandler.getLooper().getThread()) {
+
+throw new RuntimeException("addObserver allowed only from MAIN thread");
 
 }
 
-// Call Java method via JNI
+}
 
-jniEnv[instanceNum]->CallStaticVoidMethod(
+if (broadcasting != 0) {
 
-jclass_ConnectionsManager,
+// defer modifications while iterating observers
 
-jclass_ConnectionsManager_onRequestComplete,
+...
 
-instanceNum, token, ptr, errorCode, errorText, ...
+return;
 
-);
+}
 
-}), ...);
+ArrayList<NotificationCenterDelegate> objects = observers.get(id);
+
+if (objects == null) {
+
+observers.put(id, (objects = createArrayForId(id)));
+
+}
+
+if (!objects.contains(observer)) {
+
+objects.add(observer);
+
+}
+
+}
+
+  
+
+public void removeObserver(NotificationCenterDelegate observer, int id) {
+
+// Similar logic, with deferral if broadcasting != 0
+
+}
 
 ```
 
   
 
-This lambda becomes the `onCompleteRequestCallback` for Java-initiated requests.
+Design aspects:
+
+  
+
+- **Main‑thread only**: registration and removal must be on the UI thread (in debug mode it will crash otherwise).
+
+- **Broadcast‑safe**: while broadcasting (`broadcasting > 0`), add/remove operations are queued in `addAfterBroadcast` / `removeAfterBroadcast` and applied after the broadcast finishes.
+
+- Some busy event IDs get a `UniqArrayList` wrapper for faster `contains()` and deduplication.
+
+  
+
+### 3.2 Posting Events
+
+  
+
+High‑level API:
+
+  
+
+```java
+
+public void postNotificationName(final int id, Object... args) {
+
+boolean allowDuringAnimation = ...; // special cases
+
+...
+
+if (shouldDebounce(id, args) && BuildVars.DEBUG_VERSION) {
+
+postNotificationDebounced(id, args);
+
+} else {
+
+postNotificationNameInternal(id, allowDuringAnimation, args);
+
+}
+
+...
+
+}
+
+```
+
+  
+
+Core dispatch:
+
+  
+
+```java
+
+@UiThread
+
+public void postNotificationNameInternal(int id, boolean allowDuringAnimation, Object... args) {
+
+if (BuildVars.DEBUG_VERSION) {
+
+if (Thread.currentThread() != ApplicationLoader.applicationHandler.getLooper().getThread()) {
+
+throw new RuntimeException("postNotificationName allowed only from MAIN thread");
+
+}
+
+}
+
+if (!allowDuringAnimation && isAnimationInProgress()) {
+
+delayedPosts.add(new DelayedPost(id, args));
+
+return;
+
+}
+
+if (!postponeCallbackList.isEmpty()) {
+
+for (int i = 0; i < postponeCallbackList.size(); i++) {
+
+if (postponeCallbackList.get(i).needPostpone(id, currentAccount, args)) {
+
+delayedPosts.add(new DelayedPost(id, args));
+
+return;
+
+}
+
+}
+
+}
+
+broadcasting++;
+
+ArrayList<NotificationCenterDelegate> objects = observers.get(id);
+
+if (objects != null && !objects.isEmpty()) {
+
+for (int a = 0; a < objects.size(); a++) {
+
+NotificationCenterDelegate obj = objects.get(a);
+
+obj.didReceivedNotification(id, currentAccount, args);
+
+}
+
+}
+
+broadcasting--;
+
+if (broadcasting == 0) {
+
+// apply deferred add/remove
+
+...
+
+}
+
+}
+
+```
+
+  
+
+Key properties:
+
+  
+
+- **Main‑thread dispatch** ensures UI safety.
+
+- **Animation / heavy‑operation aware**:
+
+- Events can be delayed during complex transitions (`isAnimationInProgress()`).
+
+- Only whitelisted IDs may pass through.
+
+- **Postpone callbacks** allow higher‑level managers to veto / delay certain notifications.
+
+  
+
+From a design pattern POV:
+
+  
+
+- This is an **Observer / Publish–Subscribe** system with:
+
+- Main‑thread safety constraints
+
+- Back‑pressure and debouncing support
+
+- Lifecycle‑aware helpers (`listen`, `listenOnce`, etc.)
 
   
 
@@ -166,409 +420,35 @@ This lambda becomes the `onCompleteRequestCallback` for Java-initiated requests.
 
   
 
-## Request Lifecycle
+## 4. ConnectionsManager – Using NotificationCenter as Publisher
 
   
 
-### 1. Request Creation (Java → Native)
+Although `ConnectionsManager` lives in `org.telegram.tgnet` (network layer) and never calls `NotificationCenter.listen(...)`, it **publishes** state changes that the UI listens to via `NotificationCenter`.
 
   
 
-```mermaid
-
-flowchart LR
-
-A[Java: ConnectionsManager.sendRequest] --> B[JNI: native_sendRequest]
-
-B --> C[Native: ConnectionsManager::sendRequest]
-
-C --> D[Native: Creates Request object<br/>with onCompleteRequestCallback]
-
-D --> E[Native: Adds to runningRequests queue]
-
-```
+### 4.1 Connection State Changes
 
   
-
-### 2. Request Transmission
-
-  
-
-```mermaid
-
-flowchart LR
-
-A[Native: Serializes TLObject<br/>to NativeByteBuffer] --> B[Native: Encrypts with AES-IGE]
-
-B --> C[Native: Sends via ConnectionSocket]
-
-C --> D[Network: MTProto packet<br/>sent to Telegram server]
-
-```
-
-  
-
-### 3. Response Reception
-
-  
-
-```mermaid
-
-flowchart LR
-
-A[Network: MTProto packet received] --> B[Native: ConnectionSocket::onEvent<br/>→ recv]
-
-B --> C[Native: Connection::onReceivedData<br/>→ AES-CTR decrypt]
-
-C --> D[Native: ConnectionsManager::<br/>onConnectionDataReceived]
-
-D --> E[Native: Datacenter::<br/>decryptServerResponse<br/>→ AES-IGE decrypt]
-
-E --> F[Native: TLdeserialize<br/>→ Creates TLObject]
-
-F --> G[Native: processServerResponse]
-
-```
-
-  
-
-### 4. Callback Invocation
-
-  
-
-```mermaid
-
-flowchart LR
-
-A[Native: processServerResponse<br/>finds matching Request] --> B[Native: request->onComplete called]
-
-B --> C[Native: onCompleteRequestCallback invoked]
-
-C --> D[JNI: Calls Java static method]
-
-D --> E[Java: onRequestComplete<br/>retrieves callback]
-
-E --> F[Java: Executes callback<br/>on stageQueue]
-
-```
-
-  
-
----
-
-  
-
-## Complete Flow Diagram
-
-  
-
-### High-Level Architecture
-
-  
-
-```mermaid
-
-graph TB
-
-subgraph Native["🔷 Native Network Thread"]
-
-direction TB
-
-A[epoll_wait Loop] --> B[Socket I/O]
-
-B --> C[MTProto Decryption]
-
-C --> D[Response Processing]
-
-D --> E[Request::onComplete]
-
-E --> F[JNI Lambda Callback]
-
-end
-
-subgraph JNI["🔶 JNI Bridge"]
-
-F --> G[CallStaticVoidMethod]
-
-end
-
-subgraph Java["🟢 Java Main Thread"]
-
-G --> H[onRequestComplete]
-
-H --> I[Retrieve Callback]
-
-I --> J[Execute Java Lambda]
-
-end
-
-subgraph StageQueue["🟡 Stage Queue Thread"]
-
-J --> K[Post to stageQueue]
-
-K --> L[User Callback]
-
-end
-
-style Native fill:#4a9eff,color:#fff
-
-style JNI fill:#ffa500,color:#fff
-
-style Java fill:#4caf50,color:#fff
-
-style StageQueue fill:#ffc107,color:#000
-
-```
-
-  
-
-### Detailed Flow Sequence
-
-  
-
-```mermaid
-
-sequenceDiagram
-
-participant Socket as Socket I/O
-
-participant Conn as Connection
-
-participant CM as ConnectionsManager
-
-participant DC as Datacenter
-
-participant Req as Request
-
-participant JNI as JNI Bridge
-
-participant Java as Java Thread
-
-participant Queue as Stage Queue
-
-Note over Socket,Queue: Response Reception & Processing
-
-Socket->>Conn: recv() data
-
-Conn->>Conn: AES-CTR decrypt (transport)
-
-Conn->>CM: onConnectionDataReceived(buffer)
-
-CM->>CM: Read auth_key_id
-
-CM->>DC: decryptServerResponse()
-
-DC->>DC: Generate message key (SHA-256)
-
-DC->>DC: AES-IGE decrypt
-
-DC->>DC: Verify SHA-256 checksum
-
-DC-->>CM: Decrypted data
-
-CM->>CM: TLdeserialize() → TLObject
-
-CM->>CM: processServerResponse(TL_rpc_result)
-
-Note over CM: Find matching Request by req_msg_id
-
-CM->>CM: Handle gzip decompression
-
-CM->>CM: Handle errors (401, 403, 420, etc.)
-
-CM->>Req: request->onComplete(result, error)
-
-Req->>Req: Check onCompleteRequestCallback
-
-Req->>JNI: Invoke lambda callback
-
-Note over JNI,Java: JNI Bridge
-
-JNI->>JNI: Convert C++ types to JNI types
-
-JNI->>Java: CallStaticVoidMethod(onRequestComplete)
-
-Java->>Java: Get RequestCallbacks from map
-
-Java->>Java: Execute stored Java lambda
-
-Note over Java,Queue: Java Callback Processing
-
-Java->>Java: Deserialize response
-
-Java->>Java: Create error object if needed
-
-Java->>Queue: postRunnable() to stageQueue
-
-Queue->>Queue: Execute user callback
-
-Queue->>Queue: OR processUpdates() for Updates
-
-```
-
-  
-
-### Component Interaction Flow
-
-  
-
-```mermaid
-
-flowchart TD
-
-Start([Server Response Arrives]) --> Socket[ConnectionSocket::onEvent<br/>EPOLLIN]
-
-Socket --> Recv[recv socketFd]
-
-Recv --> Decrypt1[AES-CTR Decrypt<br/>Transport Layer]
-
-Decrypt1 --> Parse[Parse MTProto<br/>Packet Length]
-
-Parse --> CM1[ConnectionsManager::<br/>onConnectionDataReceived]
-
-CM1 --> ReadKey[Read auth_key_id]
-
-ReadKey --> Decrypt2[Datacenter::<br/>decryptServerResponse]
-
-Decrypt2 --> GenKey[Generate Message Key<br/>SHA-256]
-
-GenKey --> Decrypt3[AES-IGE Decrypt]
-
-Decrypt3 --> Verify[Verify SHA-256<br/>Checksum]
-
-Verify --> ReadFields[Read: server_salt,<br/>session_id, message_id,<br/>seqno, length]
-
-ReadFields --> Deserialize[TLdeserialize<br/>→ TLObject]
-
-Deserialize --> Process[processServerResponse]
-
-Process --> CheckType{Message Type?}
-
-CheckType -->|TL_rpc_result| FindReq[Find Request in<br/>runningRequests]
-
-CheckType -->|TL_msg_container| Container[Process each<br/>inner message]
-
-Container --> FindReq
-
-FindReq --> HandleGzip{Gzip<br/>Packed?}
-
-HandleGzip -->|Yes| Decompress[decompressGZip]
-
-HandleGzip -->|No| HandleError
-
-Decompress --> HandleError[Handle Errors<br/>401, 403, 420, 500]
-
-HandleError --> Discard{Discard<br/>Response?}
-
-Discard -->|No| CallComplete[request->onComplete<br/>result, error]
-
-Discard -->|Yes| End1([End])
-
-CallComplete --> CheckCallback{Callback<br/>Exists?}
-
-CheckCallback -->|Yes| InvokeCallback[onCompleteRequestCallback<br/>result, error]
-
-CheckCallback -->|No| End2([End])
-
-InvokeCallback --> Marshal[JNI Lambda:<br/>Marshal to Java Types]
-
-Marshal --> JNICall[CallStaticVoidMethod<br/>onRequestComplete]
-
-JNICall --> JavaGet[Get RequestCallbacks<br/>from map]
-
-JavaGet --> JavaLambda[Execute Java Lambda]
-
-JavaLambda --> DeserializeJava[Deserialize Response<br/>in Java]
-
-DeserializeJava --> PostQueue[postRunnable to<br/>stageQueue]
-
-PostQueue --> UserCallback[User Callback<br/>OR processUpdates]
-
-UserCallback --> End3([End])
-
-style Start fill:#90EE90
-
-style End1 fill:#FFB6C1
-
-style End2 fill:#FFB6C1
-
-style End3 fill:#90EE90
-
-style Decrypt1 fill:#FFE4B5
-
-style Decrypt2 fill:#FFE4B5
-
-style Decrypt3 fill:#FFE4B5
-
-style InvokeCallback fill:#87CEEB
-
-style JNICall fill:#DDA0DD
-
-style UserCallback fill:#98FB98
-
-```
-
-  
-
----
-
-  
-
-## Step-by-Step Flow
-
-  
-
-### Phase 1: Request Setup (Java → Native)
-
-  
-
-**1.1. Java initiates request**
 
 ```java
 
 // ConnectionsManager.java
 
-sendRequest(object, onComplete, ...)
+public static void onConnectionStateChanged(final int state, final int currentAccount) {
 
-└─> sendRequestInternal(object, onComplete, ...)
+AndroidUtilities.runOnUIThread(() -> {
 
-└─> listen(requestToken, (response, errorCode, ...) -> {
+getInstance(currentAccount).connectionState = state;
 
-// This lambda is stored in requestCallbacks map
+AccountInstance.getInstance(currentAccount)
 
-// It will be called later when response arrives
+.getNotificationCenter()
 
-})
+.postNotificationName(NotificationCenter.didUpdateConnectionState);
 
-└─> native_sendRequest(buffer.address, ...)
-
-```
-
-  
-
-**1.2. Native receives request via JNI**
-
-```cpp
-
-// TgNetWrapper.cpp
-
-sendRequest(JNIEnv *env, ..., jlong object, ...) {
-
-TL_api_request *request = new TL_api_request();
-
-request->request = (NativeByteBuffer *) object;
-
-ConnectionsManager::getInstance(instanceNum).sendRequest(request,
-
-([instanceNum, token](TLObject *response, TL_error *error, ...) {
-
-// This lambda becomes onCompleteRequestCallback
-
-// It marshals response to Java via JNI
-
-}),
-
-...);
+});
 
 }
 
@@ -576,315 +456,67 @@ ConnectionsManager::getInstance(instanceNum).sendRequest(request,
 
   
 
-**1.3. Native creates Request object**
+Flow:
 
-```cpp
+  
 
-// ConnectionsManager.cpp
+1. Native code detects a connection state change and calls `ConnectionsManager.onConnectionStateChanged(...)`.
 
-sendRequestInternal(...) {
+2. This method:
 
-Request *request = new Request(
+- Switches to the **UI thread** via `AndroidUtilities.runOnUIThread`.
 
-instanceNum, token, type, flags, datacenter,
+- Updates the in‑memory `connectionState` field.
 
-onComplete, // ← Lambda from step 1.2 becomes onCompleteRequestCallback
+- Fires the `NotificationCenter.didUpdateConnectionState` event on the **per‑account** bus.
 
-onQuickAck,
+3. Any part of the UI that has:
 
-onWriteToSocket,
+  
 
-onClear
+```java
 
-);
+NotificationCenter.getInstance(account)
 
-runningRequests.push_back(std::unique_ptr<Request>(request));
-
-}
+.addObserver(this, NotificationCenter.didUpdateConnectionState);
 
 ```
 
   
 
-### Phase 2: Network I/O (Native Thread)
+will receive `didReceivedNotification(id, account, args)` when the state changes.
 
   
 
-**2.1. Socket read**
-
-```cpp
-
-// ConnectionSocket.cpp
-
-onEvent(EPOLLIN) {
-
-readCount = recv(socketFd, buffer->bytes(), READ_BUFFER_SIZE, 0);
-
-onReceivedData(buffer);
-
-}
-
-```
+From a pattern POV:
 
   
 
-**2.2. Transport decryption**
+- `ConnectionsManager` plays the role of **publisher** in the Observer pattern.
 
-```cpp
+- UI controllers and components are **subscribers**.
 
-// Connection.cpp
-
-onReceivedData(NativeByteBuffer *buffer) {
-
-AES_ctr128_encrypt(buffer->bytes(), ...); // Transport-level decryption
-
-// Parse MTProto packet length
-
-ConnectionsManager::onConnectionDataReceived(this, buffer, length);
-
-}
-
-```
+- There is **no direct dependency** from `ConnectionsManager` to specific UI classes.
 
   
 
-**2.3. MTProto decryption**
-
-```cpp
-
-// ConnectionsManager.cpp
-
-onConnectionDataReceived(Connection *connection, NativeByteBuffer *data, ...) {
-
-int64_t keyId = data->readInt64();
-
-if (keyId != 0) {
-
-// Encrypted message
-
-datacenter->decryptServerResponse(keyId, ...); // AES-IGE decrypt
-
-// Read: server_salt, session_id, message_id, seqno, length
-
-TLObject *object = TLdeserialize(nullptr, messageLength, data);
-
-processServerResponse(object, messageId, ...);
-
-}
-
-}
-
-```
+### 4.2 Global Alerts (Proxy Errors)
 
   
-
-### Phase 3: Response Processing (Native Thread)
-
-  
-
-**3.1. Process server response**
-
-```cpp
-
-// ConnectionsManager.cpp
-
-processServerResponse(TLObject *message, int64_t messageId, ...) {
-
-if (typeid(*message) == typeid(TL_rpc_result)) {
-
-TL_rpc_result *response = (TL_rpc_result *) message;
-
-int64_t resultMid = response->req_msg_id;
-
-// Find matching request
-
-for (auto iter = runningRequests.begin(); ...) {
-
-Request *request = iter->get();
-
-if (request->respondsToMessageId(resultMid)) {
-
-// Found it!
-
-```
-
-  
-
-**3.2. Handle gzip and errors**
-
-```cpp
-
-if (request->onCompleteRequestCallback != nullptr) {
-
-TLObject *result = response->result.get();
-
-// Decompress if gzipped
-
-if (typeid(*result) == typeid(TL_gzip_packed)) {
-
-unpacked_data = decompressGZip(...);
-
-result = TLdeserialize(request->rawRequest, ...);
-
-}
-
-// Handle various errors (401, 403, 420, 500, etc.)
-
-RpcError *error = dynamic_cast<RpcError *>(result);
-
-if (error != nullptr) {
-
-// Process error codes...
-
-// May set discardResponse = true
-
-}
-
-```
-
-  
-
-**3.3. Invoke callback**
-
-```cpp
-
-if (!discardResponse) {
-
-int32_t dcId = ...;
-
-if (implicitError != nullptr || error2 != nullptr) {
-
-request->onComplete(nullptr, error, ...);
-
-} else {
-
-request->onComplete(response->result.get(), nullptr, ...);
-
-}
-
-}
-
-}
-
-}
-
-}
-
-}
-
-}
-
-```
-
-  
-
-**3.4. Request::onComplete() calls the callback**
-
-```cpp
-
-// Request.cpp
-
-void Request::onComplete(TLObject *result, TL_error *error, ...) {
-
-if (onCompleteRequestCallback != nullptr && (result != nullptr || error != nullptr)) {
-
-completedSent = true;
-
-onCompleteRequestCallback(result, error, ...); // ← Invokes lambda from step 1.2
-
-}
-
-}
-
-```
-
-  
-
-### Phase 4: JNI Bridge (Native → Java)
-
-  
-
-**4.1. Lambda marshals to Java**
-
-```cpp
-
-// TgNetWrapper.cpp - Lambda created in step 1.2
-
-([instanceNum, token](TLObject *response, TL_error *error, ...) {
-
-TL_api_response *resp = (TL_api_response *) response;
-
-jlong ptr = 0;
-
-jint errorCode = 0;
-
-jstring errorText = nullptr;
-
-if (resp != nullptr) {
-
-ptr = (jlong) resp->response.get();
-
-} else if (error != nullptr) {
-
-errorCode = error->code;
-
-errorText = jniEnv[instanceNum]->NewStringUTF(error->text.c_str());
-
-}
-
-// JNI call to Java
-
-jniEnv[instanceNum]->CallStaticVoidMethod(
-
-jclass_ConnectionsManager,
-
-jclass_ConnectionsManager_onRequestComplete,
-
-instanceNum, token, ptr, errorCode, errorText, ...
-
-);
-
-if (errorText != nullptr) {
-
-jniEnv[instanceNum]->DeleteLocalRef(errorText);
-
-}
-
-})
-
-```
-
-  
-
-### Phase 5: Java Callback Execution
-
-  
-
-**5.1. Java receives JNI call**
 
 ```java
 
 // ConnectionsManager.java
 
-public static void onRequestComplete(
+public static void onProxyError() {
 
-int currentAccount, int requestToken,
+AndroidUtilities.runOnUIThread(() ->
 
-long response, int errorCode, String errorText, ...
+NotificationCenter.getGlobalInstance()
 
-) {
+.postNotificationName(NotificationCenter.needShowAlert, 3)
 
-ConnectionsManager cm = getInstance(currentAccount);
-
-RequestCallbacks callbacks = cm.requestCallbacks.get(requestToken);
-
-cm.requestCallbacks.remove(requestToken); // Clean up
-
-if (callbacks != null && callbacks.onComplete != null) {
-
-callbacks.onComplete.run(response, errorCode, errorText, ...);
-
-}
+);
 
 }
 
@@ -892,213 +524,151 @@ callbacks.onComplete.run(response, errorCode, errorText, ...);
 
   
 
-**5.2. Java callback deserializes and posts**
+Here:
+
+  
+
+- The network layer reports a proxy error as a **global event** (`needShowAlert`).
+
+- Any global listener (e.g., an activity or a global dialog manager) can subscribe:
+
+  
 
 ```java
 
-// ConnectionsManager.java - Lambda from step 1.1
+NotificationCenter.getGlobalInstance()
 
-listen(requestToken, (response, errorCode, errorText, ...) -> {
-
-TLObject resp = null;
-
-TLRPC.TL_error error = null;
-
-if (response != 0) {
-
-NativeByteBuffer buff = NativeByteBuffer.wrap(response);
-
-int magic = buff.readInt32(true);
-
-resp = object.deserializeResponse(buff, magic, true);
-
-} else if (errorText != null) {
-
-error = new TLRPC.TL_error();
-
-error.code = errorCode;
-
-error.text = errorText;
-
-}
-
-final TLObject finalResponse = resp;
-
-final TLRPC.TL_error finalError = error;
-
-// Post to stage queue
-
-Utilities.stageQueue.postRunnable(() -> {
-
-if (onComplete != null) {
-
-onComplete.run(finalResponse, finalError); // User's callback
-
-} else if (finalResponse instanceof TLRPC.Updates) {
-
-MessagesController.processUpdates(...);
-
-}
-
-});
-
-}, ...);
+.addObserver(this, NotificationCenter.needShowAlert);
 
 ```
 
   
 
-**5.3. User callback executes**
+- This is analogous to a **domain event**: UI chooses how to interpret and present it.
+
+  
+
+### 4.3 Example: Premium Flood Wait
+
+  
 
 ```java
 
-// User's code
+// ConnectionsManager.java
 
-sendRequest(request, (response, error) -> {
+if (isPremiumFloodWait && delegate != null) {
 
-// This runs on stageQueue thread
-
-if (error == null) {
-
-// Process response
-
-} else {
-
-// Handle error
+delegate.onPremiumFloodWait(instanceNum, request->requestToken, isUpload);
 
 }
 
-});
+...
+
+public static void onPremiumFloodWait(int currentAccount, int requestToken, boolean isUpload) {
+
+NotificationCenter.getInstance(currentAccount)
+
+.postNotificationName(NotificationCenter.premiumFloodWaitReceived);
+
+}
 
 ```
 
   
 
+UI components can subscribe to `premiumFloodWaitReceived` to show specialized dialogs or banners.
+
+  
+
 ---
 
   
 
-## Thread Context
+## 5. Compare: `NotificationCenter.listen` vs `ConnectionsManager.listen`
 
   
 
-### Threads Involved
+It’s easy to confuse the two because they share the name `listen`, but they serve different layers and follow different patterns.
 
   
 
-```mermaid
+### 5.1 `NotificationCenter.listen(View, id, callback)`
 
-graph LR
+  
 
-subgraph NativeThread["🔷 Native Network Thread"]
+- **Layer:** UI utility
 
-A[epoll_wait Loop]
+- **Purpose:** Attach a **view‑scoped** observer to a `NotificationCenter` event.
 
-B[Socket I/O]
+- **Pattern:** Observer + lifecycle binding
 
-C[MTProto Processing]
+- **Key behavior:**
 
-D[processServerResponse]
+- Registers on `onViewAttachedToWindow`
 
-E[onCompleteRequestCallback]
+- Unregisters on `onViewDetachedFromWindow`
 
-A --> B --> C --> D --> E
+- Returns a `Runnable` to unsubscribe programmatically.
 
-end
+  
 
-subgraph JNIThread["🔶 JNI Thread<br/>(same as Native)"]
+### 5.2 `ConnectionsManager.listen(requestToken, ...)`
 
-F[CallStaticVoidMethod]
+  
 
-E --> F
+```java
 
-end
+// ConnectionsManager.java
 
-subgraph JavaMain["🟢 Java Main Thread<br/>(via JNI)"]
+private void listen(int requestToken,
 
-G[onRequestComplete]
+RequestDelegateInternal onComplete,
 
-H[Retrieve Callback]
+QuickAckDelegate onQuickAck,
 
-I[Execute Java Lambda]
+WriteToSocketDelegate onWriteToSocket) {
 
-F --> G --> H --> I
+requestCallbacks.put(requestToken, new RequestCallbacks(onComplete, onQuickAck, onWriteToSocket));
 
-end
-
-subgraph StageQueue["🟡 Stage Queue Thread"]
-
-J[postRunnable]
-
-K[User Callback]
-
-I --> J --> K
-
-end
-
-style NativeThread fill:#4a9eff,color:#fff
-
-style JNIThread fill:#ffa500,color:#fff
-
-style JavaMain fill:#4caf50,color:#fff
-
-style StageQueue fill:#ffc107,color:#000
+}
 
 ```
 
   
 
-1. **Native Network Thread** (`ConnectionsManager::ThreadProc`)
+- **Layer:** Network / RPC layer (Java side of MTProto)
 
-- Runs `epoll_wait()` loop
+- **Purpose:** Register **per‑request callbacks** (completion, quick‑ack, write notifications) keyed by `requestToken`.
 
-- Handles all socket I/O
+- **Pattern:** Callback registry / promise‑like dispatch
 
-- Processes MTProto decryption
+- **Flow:**
 
-- Calls `processServerResponse()`
+- When Java issues a request, `sendRequestInternal` allocates a `requestToken` and calls `listen(...)` with lambdas.
 
-- Invokes `onCompleteRequestCallback` (C++ lambda)
+- When native code completes the request, it calls back into Java (`onRequestComplete`), which looks up `requestCallbacks.get(requestToken)` and executes the stored lambda.
 
-  
-
-2. **JNI Thread** (same as Native Network Thread)
-
-- When C++ lambda calls `CallStaticVoidMethod()`, it executes on the native thread
-
-- JNI attaches the thread to Java VM if needed
+- Finally, it removes the entry from `requestCallbacks` to avoid leaks.
 
   
 
-3. **Java Main Thread** (via JNI)
-
-- `onRequestComplete()` static method executes here
-
-- Retrieves callback from `requestCallbacks` map
-
-- Calls Java lambda synchronously
+Conceptually:
 
   
 
-4. **Stage Queue Thread** (`Utilities.stageQueue`)
+- `NotificationCenter.listen` → **multi‑cast** subscriptions to **named events**, primarily for UI.
 
-- User's final callback executes here
-
-- Ensures thread-safe access to shared state
-
-- Used for all message processing
+- `ConnectionsManager.listen` → **single‑cast** callback for **one RPC request**, primarily for networking.
 
   
 
-### Thread Safety
+Both are callback registries, but:
 
   
 
-- **Native side**: All network operations happen on a single dedicated thread
+- One is **event‑bus / Observer pattern**.
 
-- **Java side**: Callbacks are posted to `stageQueue` to avoid blocking the main thread
-
-- **JNI**: Thread-safe as long as JNI calls are made from the correct thread context
+- The other is **RPC callback mapping / Future‑like**.
 
   
 
@@ -1106,117 +676,91 @@ style StageQueue fill:#ffc107,color:#000
 
   
 
-## Code References
+## 6. Design Patterns & Rationale
 
   
 
-### Key Files
+### 6.1 Observer / Publish–Subscribe
 
   
 
-1. **Native C++**
-
-- `TMessagesProj/jni/tgnet/ConnectionsManager.cpp` - Main request/response handling
-
-- `TMessagesProj/jni/tgnet/Request.cpp` - Request object with callback
-
-- `TMessagesProj/jni/tgnet/Request.h` - Request class definition
-
-- `TMessagesProj/jni/tgnet/Defines.h` - Callback type definitions
-
-- `TMessagesProj/jni/TgNetWrapper.cpp` - JNI bridge with lambda callbacks
+`NotificationCenter` is a classic **Observer / Pub–Sub** implementation with:
 
   
 
-2. **Java**
+- **Loose coupling**: publishers (e.g., `ConnectionsManager`, `MessagesController`) never reference concrete subscribers.
 
-- `TMessagesProj/src/main/java/org/telegram/tgnet/ConnectionsManager.java` - Java-side request handling
+- **Many‑to‑many** relationships: multiple observers can subscribe to the same event, and one observer can subscribe to many event IDs.
 
-  
-
-### Key Methods
+- **Context separation**: per‑account vs. global instances.
 
   
 
-| Method | File | Purpose |
-
-|--------|------|---------|
-
-| `processServerResponse()` | ConnectionsManager.cpp:1085 | Processes incoming TLObject responses |
-
-| `Request::onComplete()` | Request.cpp:55 | Invokes `onCompleteRequestCallback` |
-
-| `onRequestComplete()` | ConnectionsManager.java:499 | Java static method called via JNI |
-
-| `listen()` | ConnectionsManager.java:464 | Stores Java callback in `requestCallbacks` map |
+Pros:
 
   
 
-### Key Data Structures
+- Reduces direct dependencies between layers (network, domain, UI).
+
+- Makes it easy to plug in new features that react to existing events.
 
   
 
-- **`runningRequests`** (C++): `std::vector<std::unique_ptr<Request>>` - Active requests awaiting responses
-
-- **`requestCallbacks`** (Java): `ConcurrentHashMap<Integer, RequestCallbacks>` - Maps requestToken to Java callbacks
+Cons / Trade‑offs:
 
   
 
----
+- Event IDs are integers → less type safety, more reliance on documentation.
+
+- Debugging can be harder because dispatch is indirect.
 
   
 
-## Summary
+### 6.2 Lifecycle‑Aware Observers
 
   
 
-The request/response flow in Telegram Android uses a multi-stage callback system:
+`listen(View, ...)` adds a **View lifecycle–aware layer**:
 
   
 
-```mermaid
+- Observers attach automatically when the view is visible.
 
-graph LR
+- Observers detach automatically when the view is detached.
 
-A[1. Native stores lambda<br/>in Request object] --> B[2. processServerResponse<br/>finds matching Request]
-
-B --> C[3. request->onComplete<br/>invokes callback]
-
-C --> D[4. JNI lambda marshals<br/>to Java]
-
-D --> E[5. Java retrieves callback<br/>from map]
-
-E --> F[6. Java posts to<br/>stageQueue]
-
-F --> G[7. User callback<br/>executes]
-
-style A fill:#87CEEB
-
-style B fill:#87CEEB
-
-style C fill:#87CEEB
-
-style D fill:#DDA0DD
-
-style E fill:#98FB98
-
-style F fill:#98FB98
-
-style G fill:#FFE4B5
-
-```
+- Greatly reduces the chance of memory leaks or stray notifications to dead UIs.
 
   
 
-This design allows:
+Pattern‑wise, this is similar to **Android LiveData** or **LifecycleOwner‑aware observers**, but implemented manually.
 
-- **Non-blocking I/O**: Network operations happen on a dedicated thread
+  
 
-- **Type safety**: C++ types are properly converted to Java types via JNI
+### 6.3 Event Bus vs. Direct Callbacks
 
-- **Clean separation**: Native network code is isolated from Java application logic
+  
 
-- **Error handling**: Errors are properly propagated through all layers
+- For **UI and cross‑cutting concerns** (theme changes, connection state, emoji loaded, etc.), Telegram prefers `NotificationCenter`:
+
+- Changes propagate broadly.
+
+- Consumers are loosely coupled.
+
+- For **per‑request responses** (RPC calls), Telegram uses per‑request callbacks in `ConnectionsManager`:
+
+- Each request token has its own callback.
+
+- Results are delivered exactly once, then removed.
+
+  
+
+From a software engineering perspective, this split keeps:
+
+  
+
+- **Global state transitions** (like connection state) on the event bus.
+
+- **Local, one‑off interactions** (like an RPC’s result) on a direct callback channel.
 
   
 
@@ -1224,8 +768,34 @@ This design allows:
 
   
 
-## Tags
+## 7. Mental Model Summary
 
   
 
-#telegram #android #jni #native #callback #mtproto #network #threading #c++ #java
+Think of the system as two layered mechanisms:
+
+  
+
+1. **Low‑level, point‑to‑point callbacks** in `ConnectionsManager`:
+
+- For each network request, register a completion/quick‑ack callback.
+
+- This is close to a **Future/Promise** or **callback registry** pattern.
+
+  
+
+2. **High‑level, broadcast events** via `NotificationCenter`:
+
+- `ConnectionsManager` and others publish domain events (e.g., connection state changed, proxy error).
+
+- UI code uses `NotificationCenter.listen`, `addObserver`, or `listenOnce` to react, often scoped to a `View`’s lifecycle.
+
+  
+
+The combination provides:
+
+  
+
+- Efficient, low‑latency RPC handling.
+
+- A flexible, decoupled UI reaction layer.
