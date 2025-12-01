@@ -1,801 +1,134 @@
-# NotificationCenter `listen` & ConnectionsManager – Flow and Patterns
+# Deep Dive: Telegram's Native (C++) Message Send Pipeline
 
-  
+#networking #cpp #android #telegram #mtproto
 
-## Overview
+## The Native Core: Architecture Overview
 
-  
+The C++ core is designed for high performance, low-latency, and secure communication. It runs on its own dedicated threads, completely separate from the Android UI thread, to handle all heavy lifting of encryption, decryption, and network I/O.
 
-This note explains, from a software engineer’s perspective:
+**Key Components:**
 
-  
+- **`[TgNetWrapper.cpp](code-assist-path:/home/super/workspace/Telegram/TMessagesProj/jni/TgNetWrapper.cpp "/home/super/workspace/Telegram/TMessagesProj/jni/TgNetWrapper.cpp")` (JNI Layer)**: This is the primary bridge between the Java/Kotlin world and the C++ world. It contains the implementations of the `native_*` methods declared in `[ConnectionsManager.java](code-assist-path:/home/super/workspace/Telegram/TMessagesProj/src/main/java/org/telegram/tgnet/ConnectionsManager.java "/home/super/workspace/Telegram/TMessagesProj/src/main/java/org/telegram/tgnet/ConnectionsManager.java")`. Its main job is to translate Java data types (like the `NativeByteBuffer`) into C++ data structures and to dispatch calls to the appropriate C++ objects.
+- **`Connection` Class**: This C++ class represents a single, persistent TCP socket connection to a Telegram datacenter (DC). It manages the socket's lifecycle, performs the actual reads and writes, and handles connection-level events like disconnects and timeouts. The application maintains multiple `Connection` objects for different purposes (generic API calls, file uploads, file downloads).
+- **MTProto State Machine**: This is the engine that implements Telegram's bespoke cryptographic protocol, MTProto. It's not a single class but a collection of logic responsible for creating, encrypting, and parsing MTProto messages. It manages authorization keys, session IDs, message sequence numbers, and server salts.
 
-- How `NotificationCenter.listen(...)` works in `NotificationCenter.java`
+```mermaid
+graph TD
+    subgraph Java Layer
+        A[SendMessagesHelper] --> B[ConnectionsManager.java];
+    end
 
-- How `ConnectionsManager.java` *publishes* events via `NotificationCenter`
+    B --> C[JNI: native_sendRequest in TgNetWrapper.cpp];
 
-- The overall flow, mechanism, and design patterns behind Telegram’s in‑process event bus
+    subgraph C++ Native Layer
+        C --> D{Request Queue};
+        D --> E[Network Thread];
+        E --> F[MTProto Engine];
+        F --> G[Connection Object];
+        G --> H((TCP Socket));
+    end
 
-  
+    H --> I((Telegram DC Server));
 
-Although `ConnectionsManager` does **not** directly call `NotificationCenter.listen(...)`, it **emits** events that UI components **consume** using `listen(...)`, `addObserver(...)`, or helper wrappers like `listenEmojiLoading(...)`. Together, these form a decoupled pub/sub system.
-
-  
+    style C fill:#f9f,stroke:#333,stroke-width:2px
+    style H fill:#bbf,stroke:#333,stroke-width:2px
+```
 
 ---
 
-  
+## Step 1: The JNI Handoff - `native_sendRequest`
 
-## 1. NotificationCenter as an Event Bus
-
-  
-
-### 1.1 Core Concepts
-
-  
-
-- `NotificationCenter` is a **per‑account event bus** plus a **global event bus**.
-
-- Events are represented as **integer IDs** (e.g. `didUpdateConnectionState`, `emojiLoaded`, etc.).
-
-- Observers implement the `NotificationCenterDelegate` interface and are registered/unregistered per event ID.
-
-- `postNotificationName(...)` broadcasts an event (with optional arguments) to all observers.
-
-  
-
-Key parts:
-
-  
+The journey into the native layer begins with the `native_sendRequest` call from `[ConnectionsManager.java](code-assist-path:/home/super/workspace/Telegram/TMessagesProj/src/main/java/org/telegram/tgnet/ConnectionsManager.java "/home/super/workspace/Telegram/TMessagesProj/src/main/java/org/telegram/tgnet/ConnectionsManager.java")`.
 
 ```java
-
-// NotificationCenter.java
-
-public class NotificationCenter {
-
-private final SparseArray<ArrayList<NotificationCenterDelegate>> observers = new SparseArray<>();
-
-...
-
-public interface NotificationCenterDelegate {
-
-void didReceivedNotification(int id, int account, Object... args);
-
-}
-
-  
-
-@UiThread
-
-public static NotificationCenter getInstance(int num) { ... } // per-account bus
-
-  
-
-@UiThread
-
-public static NotificationCenter getGlobalInstance() { ... } // global bus
-
-}
-
-```
-
-  
-
-This is essentially an **Observer pattern** implementation, specialized for a high‑cardinality set of event types.
-
-  
-
----
-
-  
-
-## 2. `NotificationCenter.listen(...)` – View‑Scoped Observation
-
-  
-
-### 2.1 Implementation
-
-  
-
-`listen(...)` is a **convenience API** that:
-
-  
-
-- Wraps a raw `NotificationCenterDelegate` and a `View`
-
-- Automatically **adds** the observer when the `View` is attached
-
-- Automatically **removes** the observer when the `View` is detached
-
-- Returns a `Runnable` that can be called to manually stop listening
-
-  
-
-```java
-
-// NotificationCenter.java
-
-public Runnable listen(View view, final int id, final Utilities.Callback<Object[]> callback) {
-
-if (view == null || callback == null) {
-
-return () -> {};
-
-}
-
-final NotificationCenterDelegate delegate = (_id, account, args) -> {
-
-if (_id == id) {
-
-callback.run(args);
-
-}
-
-};
-
-final View.OnAttachStateChangeListener viewListener = new View.OnAttachStateChangeListener() {
-
-@Override
-
-public void onViewAttachedToWindow(View view) {
-
-addObserver(delegate, id);
-
-}
-
-@Override
-
-public void onViewDetachedFromWindow(View view) {
-
-removeObserver(delegate, id);
-
-}
-
-};
-
-view.addOnAttachStateChangeListener(viewListener);
-
-  
-
-return () -> {
-
-view.removeOnAttachStateChangeListener(viewListener);
-
-removeObserver(delegate, id);
-
-};
-
-}
-
-```
-
-  
-
-### 2.2 Behavior & Intent
-
-  
-
-- The **delegate** filters events on `_id == id`, then forwards `args` to the provided `callback`.
-
-- `View.OnAttachStateChangeListener` ensures observers are:
-
-- Registered **only** while the view is part of the view hierarchy.
-
-- Automatically cleaned up when the view is detached (avoiding leaks).
-
-- The returned `Runnable` gives you **manual control** to unsubscribe early (e.g. when a dialog closes).
-
-  
-
-This is a lightweight **lifecycle‑aware observer** wrapper:
-
-  
-
-> *Tie the lifespan of your event subscription to the lifespan of a UI view, without repeating boilerplate add/remove calls.*
-
-  
-
----
-
-  
-
-## 3. NotificationCenter Dispatch – How Events Travel
-
-  
-
-### 3.1 Adding / Removing Observers
-
-  
-
-Raw observer management:
-
-  
-
-```java
-
-public void addObserver(NotificationCenterDelegate observer, int id) {
-
-if (BuildVars.DEBUG_VERSION) {
-
-if (Thread.currentThread() != ApplicationLoader.applicationHandler.getLooper().getThread()) {
-
-throw new RuntimeException("addObserver allowed only from MAIN thread");
-
-}
-
-}
-
-if (broadcasting != 0) {
-
-// defer modifications while iterating observers
-
-...
-
-return;
-
-}
-
-ArrayList<NotificationCenterDelegate> objects = observers.get(id);
-
-if (objects == null) {
-
-observers.put(id, (objects = createArrayForId(id)));
-
-}
-
-if (!objects.contains(observer)) {
-
-objects.add(observer);
-
-}
-
-}
-
-  
-
-public void removeObserver(NotificationCenterDelegate observer, int id) {
-
-// Similar logic, with deferral if broadcasting != 0
-
-}
-
-```
-
-  
-
-Design aspects:
-
-  
-
-- **Main‑thread only**: registration and removal must be on the UI thread (in debug mode it will crash otherwise).
-
-- **Broadcast‑safe**: while broadcasting (`broadcasting > 0`), add/remove operations are queued in `addAfterBroadcast` / `removeAfterBroadcast` and applied after the broadcast finishes.
-
-- Some busy event IDs get a `UniqArrayList` wrapper for faster `contains()` and deduplication.
-
-  
-
-### 3.2 Posting Events
-
-  
-
-High‑level API:
-
-  
-
-```java
-
-public void postNotificationName(final int id, Object... args) {
-
-boolean allowDuringAnimation = ...; // special cases
-
-...
-
-if (shouldDebounce(id, args) && BuildVars.DEBUG_VERSION) {
-
-postNotificationDebounced(id, args);
-
-} else {
-
-postNotificationNameInternal(id, allowDuringAnimation, args);
-
-}
-
-...
-
-}
-
-```
-
-  
-
-Core dispatch:
-
-  
-
-```java
-
-@UiThread
-
-public void postNotificationNameInternal(int id, boolean allowDuringAnimation, Object... args) {
-
-if (BuildVars.DEBUG_VERSION) {
-
-if (Thread.currentThread() != ApplicationLoader.applicationHandler.getLooper().getThread()) {
-
-throw new RuntimeException("postNotificationName allowed only from MAIN thread");
-
-}
-
-}
-
-if (!allowDuringAnimation && isAnimationInProgress()) {
-
-delayedPosts.add(new DelayedPost(id, args));
-
-return;
-
-}
-
-if (!postponeCallbackList.isEmpty()) {
-
-for (int i = 0; i < postponeCallbackList.size(); i++) {
-
-if (postponeCallbackList.get(i).needPostpone(id, currentAccount, args)) {
-
-delayedPosts.add(new DelayedPost(id, args));
-
-return;
-
-}
-
-}
-
-}
-
-broadcasting++;
-
-ArrayList<NotificationCenterDelegate> objects = observers.get(id);
-
-if (objects != null && !objects.isEmpty()) {
-
-for (int a = 0; a < objects.size(); a++) {
-
-NotificationCenterDelegate obj = objects.get(a);
-
-obj.didReceivedNotification(id, currentAccount, args);
-
-}
-
-}
-
-broadcasting--;
-
-if (broadcasting == 0) {
-
-// apply deferred add/remove
-
-...
-
-}
-
-}
-
-```
-
-  
-
-Key properties:
-
-  
-
-- **Main‑thread dispatch** ensures UI safety.
-
-- **Animation / heavy‑operation aware**:
-
-- Events can be delayed during complex transitions (`isAnimationInProgress()`).
-
-- Only whitelisted IDs may pass through.
-
-- **Postpone callbacks** allow higher‑level managers to veto / delay certain notifications.
-
-  
-
-From a design pattern POV:
-
-  
-
-- This is an **Observer / Publish–Subscribe** system with:
-
-- Main‑thread safety constraints
-
-- Back‑pressure and debouncing support
-
-- Lifecycle‑aware helpers (`listen`, `listenOnce`, etc.)
-
-  
-
----
-
-  
-
-## 4. ConnectionsManager – Using NotificationCenter as Publisher
-
-  
-
-Although `ConnectionsManager` lives in `org.telegram.tgnet` (network layer) and never calls `NotificationCenter.listen(...)`, it **publishes** state changes that the UI listens to via `NotificationCenter`.
-
-  
-
-### 4.1 Connection State Changes
-
-  
-
-```java
-
 // ConnectionsManager.java
-
-public static void onConnectionStateChanged(final int state, final int currentAccount) {
-
-AndroidUtilities.runOnUIThread(() -> {
-
-getInstance(currentAccount).connectionState = state;
-
-AccountInstance.getInstance(currentAccount)
-
-.getNotificationCenter()
-
-.postNotificationName(NotificationCenter.didUpdateConnectionState);
-
-});
-
-}
-
+public static native void native_sendRequest(int currentAccount, long object, int flags, int datacenterId, int connectionType, boolean immediate, int requestToken);
 ```
 
-  
+1. **Data Reception**: In `[TgNetWrapper.cpp](code-assist-path:/home/super/workspace/Telegram/TMessagesProj/jni/TgNetWrapper.cpp "/home/super/workspace/Telegram/TMessagesProj/jni/TgNetWrapper.cpp")`, the `object` parameter (a `long`) is reinterpreted as a pointer to the `NativeByteBuffer` that was allocated in Java. This gives the C++ code direct, zero-copy access to the serialized `TLObject` (e.g., `TL_messages_sendMessage`).
+2. **Request Object Creation**: The raw data is encapsulated in a C++ `Request` object. This object contains the payload, the `requestToken`, and metadata like `flags` and `datacenterId`.
+3. **Queuing**: The newly created `Request` object is not sent immediately. It is pushed into a thread-safe queue for the appropriate `Connection` object. This queuing mechanism allows the Java layer to return instantly while the native threads process the request asynchronously.
 
-Flow:
+## Step 2: Packaging for Transport - The MTProto Protocol
 
-  
+Before the request can be written to the socket, it must be securely packaged according to the **MTProto v2.0** protocol. This is the most critical part of the process, ensuring message confidentiality, integrity, and authenticity.
 
-1. Native code detects a connection state change and calls `ConnectionsManager.onConnectionStateChanged(...)`.
+A dedicated network thread dequeues the `Request` and hands it to the MTProto engine. The engine constructs a secure message with the following structure:
 
-2. This method:
+#### MTProto v2.0 Packet Structure
 
-- Switches to the **UI thread** via `AndroidUtilities.runOnUIThread`.
+```mermaid
+graph TD
+    subgraph Encrypted Packet (Sent over TCP)
+        A[Auth Key ID (8 bytes)]
+        B[Message Key (16 bytes)]
+        C[Encrypted Data]
+    end
 
-- Updates the in‑memory `connectionState` field.
-
-- Fires the `NotificationCenter.didUpdateConnectionState` event on the **per‑account** bus.
-
-3. Any part of the UI that has:
-
-  
-
-```java
-
-NotificationCenter.getInstance(account)
-
-.addObserver(this, NotificationCenter.didUpdateConnectionState);
-
+    subgraph " "
+        direction LR
+        subgraph Encrypted Data (Payload for AES-256-IGE)
+            D[Server Salt (8 bytes)]
+            E[Session ID (8 bytes)]
+            F[Message ID (8 bytes)]
+            G[Sequence Number (4 bytes)]
+            H[Message Data Length (4 bytes)]
+            I[Message Data (The serialized TLObject)]
+            J[Padding (0-15 bytes)]
+        end
+    end
+    A --> B --> C
 ```
 
-  
+**Breakdown of the components:**
 
-will receive `didReceivedNotification(id, account, args)` when the state changes.
+- **`auth_key_id`**: An 8-byte identifier for the permanent authorization key used for encryption. This tells the server which key to use for decryption.
+- **`msg_key` (Message Key)**: A 16-byte (128-bit) hash that serves as an integrity check. It is calculated as the **middle 128 bits of the SHA-256 hash** of the data that will be encrypted. The server re-calculates this hash after decryption to ensure the message was not tampered with.
+- **`encrypted_data`**: This is the core payload, encrypted using **AES-256 in IGE (Infinite Garble Extension) mode**. The encryption key is derived from the `auth_key` and the `msg_key`. IGE mode is chosen for its properties that help detect data manipulation.
 
-  
+**Inside the `encrypted_data`:**
 
-From a pattern POV:
+- **`server_salt` & `session_id`**: Values provided by the server to prevent replay attacks and to associate the message with the current session.
+- **`message_id`**: A unique, time-dependent identifier for the message. It must be greater than previous message IDs within the session.
+- **`seq_no` (Sequence Number)**: A counter that increments for each message within a session. The server uses it to ensure messages are processed in the correct order.
+- **`message_data`**: This is the actual serialized `TLObject` (our `TL_messages_sendMessage` request) from Step 1.
+- **`padding`**: Random bytes (0 to 15) are added at the end to ensure the total length of the data to be encrypted is a multiple of 16 bytes (the AES block size).
 
-  
+## Step 3: The Send Pipeline - From Queue to Socket
 
-- `ConnectionsManager` plays the role of **publisher** in the Observer pattern.
+The network thread executes a highly efficient pipeline to process each request.
 
-- UI controllers and components are **subscribers**.
+```mermaid
+sequenceDiagram
+    participant J as Java Layer
+    participant Q as C++ Request Queue
+    participant N as C++ Network Thread
+    participant M as C++ MTProto Engine
+    participant S as C++ Connection (Socket)
 
-- There is **no direct dependency** from `ConnectionsManager` to specific UI classes.
-
-  
-
-### 4.2 Global Alerts (Proxy Errors)
-
-  
-
-```java
-
-// ConnectionsManager.java
-
-public static void onProxyError() {
-
-AndroidUtilities.runOnUIThread(() ->
-
-NotificationCenter.getGlobalInstance()
-
-.postNotificationName(NotificationCenter.needShowAlert, 3)
-
-);
-
-}
-
+    J->>Q: native_sendRequest(data)
+    N->>Q: Dequeue Request
+    N->>M: Process Request
+    M->>M: 1. Serialize TLObject + Add Padding
+    M->>M: 2. Generate msg_key (SHA-256)
+    M->>M: 3. Encrypt data (AES-256-IGE)
+    M->>M: 4. Assemble Final MTProto Packet
+    M->>S: Give packet to Connection
+    S->>S: Write bytes to TCP Socket
 ```
 
-  
-
-Here:
-
-  
-
-- The network layer reports a proxy error as a **global event** (`needShowAlert`).
-
-- Any global listener (e.g., an activity or a global dialog manager) can subscribe:
-
-  
-
-```java
-
-NotificationCenter.getGlobalInstance()
-
-.addObserver(this, NotificationCenter.needShowAlert);
-
-```
-
-  
-
-- This is analogous to a **domain event**: UI chooses how to interpret and present it.
-
-  
-
-### 4.3 Example: Premium Flood Wait
-
-  
-
-```java
-
-// ConnectionsManager.java
-
-if (isPremiumFloodWait && delegate != null) {
-
-delegate.onPremiumFloodWait(instanceNum, request->requestToken, isUpload);
-
-}
-
-...
-
-public static void onPremiumFloodWait(int currentAccount, int requestToken, boolean isUpload) {
-
-NotificationCenter.getInstance(currentAccount)
-
-.postNotificationName(NotificationCenter.premiumFloodWaitReceived);
-
-}
-
-```
-
-  
-
-UI components can subscribe to `premiumFloodWaitReceived` to show specialized dialogs or banners.
-
-  
-
----
-
-  
-
-## 5. Compare: `NotificationCenter.listen` vs `ConnectionsManager.listen`
-
-  
-
-It’s easy to confuse the two because they share the name `listen`, but they serve different layers and follow different patterns.
-
-  
-
-### 5.1 `NotificationCenter.listen(View, id, callback)`
-
-  
-
-- **Layer:** UI utility
-
-- **Purpose:** Attach a **view‑scoped** observer to a `NotificationCenter` event.
-
-- **Pattern:** Observer + lifecycle binding
-
-- **Key behavior:**
-
-- Registers on `onViewAttachedToWindow`
-
-- Unregisters on `onViewDetachedFromWindow`
-
-- Returns a `Runnable` to unsubscribe programmatically.
-
-  
-
-### 5.2 `ConnectionsManager.listen(requestToken, ...)`
-
-  
-
-```java
-
-// ConnectionsManager.java
-
-private void listen(int requestToken,
-
-RequestDelegateInternal onComplete,
-
-QuickAckDelegate onQuickAck,
-
-WriteToSocketDelegate onWriteToSocket) {
-
-requestCallbacks.put(requestToken, new RequestCallbacks(onComplete, onQuickAck, onWriteToSocket));
-
-}
-
-```
-
-  
-
-- **Layer:** Network / RPC layer (Java side of MTProto)
-
-- **Purpose:** Register **per‑request callbacks** (completion, quick‑ack, write notifications) keyed by `requestToken`.
-
-- **Pattern:** Callback registry / promise‑like dispatch
-
-- **Flow:**
-
-- When Java issues a request, `sendRequestInternal` allocates a `requestToken` and calls `listen(...)` with lambdas.
-
-- When native code completes the request, it calls back into Java (`onRequestComplete`), which looks up `requestCallbacks.get(requestToken)` and executes the stored lambda.
-
-- Finally, it removes the entry from `requestCallbacks` to avoid leaks.
-
-  
-
-Conceptually:
-
-  
-
-- `NotificationCenter.listen` → **multi‑cast** subscriptions to **named events**, primarily for UI.
-
-- `ConnectionsManager.listen` → **single‑cast** callback for **one RPC request**, primarily for networking.
-
-  
-
-Both are callback registries, but:
-
-  
-
-- One is **event‑bus / Observer pattern**.
-
-- The other is **RPC callback mapping / Future‑like**.
-
-  
-
----
-
-  
-
-## 6. Design Patterns & Rationale
-
-  
-
-### 6.1 Observer / Publish–Subscribe
-
-  
-
-`NotificationCenter` is a classic **Observer / Pub–Sub** implementation with:
-
-  
-
-- **Loose coupling**: publishers (e.g., `ConnectionsManager`, `MessagesController`) never reference concrete subscribers.
-
-- **Many‑to‑many** relationships: multiple observers can subscribe to the same event, and one observer can subscribe to many event IDs.
-
-- **Context separation**: per‑account vs. global instances.
-
-  
-
-Pros:
-
-  
-
-- Reduces direct dependencies between layers (network, domain, UI).
-
-- Makes it easy to plug in new features that react to existing events.
-
-  
-
-Cons / Trade‑offs:
-
-  
-
-- Event IDs are integers → less type safety, more reliance on documentation.
-
-- Debugging can be harder because dispatch is indirect.
-
-  
-
-### 6.2 Lifecycle‑Aware Observers
-
-  
-
-`listen(View, ...)` adds a **View lifecycle–aware layer**:
-
-  
-
-- Observers attach automatically when the view is visible.
-
-- Observers detach automatically when the view is detached.
-
-- Greatly reduces the chance of memory leaks or stray notifications to dead UIs.
-
-  
-
-Pattern‑wise, this is similar to **Android LiveData** or **LifecycleOwner‑aware observers**, but implemented manually.
-
-  
-
-### 6.3 Event Bus vs. Direct Callbacks
-
-  
-
-- For **UI and cross‑cutting concerns** (theme changes, connection state, emoji loaded, etc.), Telegram prefers `NotificationCenter`:
-
-- Changes propagate broadly.
-
-- Consumers are loosely coupled.
-
-- For **per‑request responses** (RPC calls), Telegram uses per‑request callbacks in `ConnectionsManager`:
-
-- Each request token has its own callback.
-
-- Results are delivered exactly once, then removed.
-
-  
-
-From a software engineering perspective, this split keeps:
-
-  
-
-- **Global state transitions** (like connection state) on the event bus.
-
-- **Local, one‑off interactions** (like an RPC’s result) on a direct callback channel.
-
-  
-
----
-
-  
-
-## 7. Mental Model Summary
-
-  
-
-Think of the system as two layered mechanisms:
-
-  
-
-1. **Low‑level, point‑to‑point callbacks** in `ConnectionsManager`:
-
-- For each network request, register a completion/quick‑ack callback.
-
-- This is close to a **Future/Promise** or **callback registry** pattern.
-
-  
-
-2. **High‑level, broadcast events** via `NotificationCenter`:
-
-- `ConnectionsManager` and others publish domain events (e.g., connection state changed, proxy error).
-
-- UI code uses `NotificationCenter.listen`, `addObserver`, or `listenOnce` to react, often scoped to a `View`’s lifecycle.
-
-  
-
-The combination provides:
-
-  
-
-- Efficient, low‑latency RPC handling.
-
-- A flexible, decoupled UI reaction layer.
+1. **Dequeue**: The network thread pulls the next pending `Request` from its queue.
+2. **Prepare Payload**: The MTProto engine prepares the `encrypted_data` payload: it serializes the `TLObject`, adds the `server_salt`, `session_id`, `message_id`, `seq_no`, and random padding.
+3. **Generate `msg_key`**: It computes the SHA-256 hash of this payload and extracts the middle 16 bytes to form the `msg_key`.
+4. **Encrypt**: It encrypts the entire payload using AES-256-IGE. The key and IV for this operation are derived from a combination of the master `auth_key` and the `msg_key`.
+5. **Assemble Packet**: It prepends the `auth_key_id` and the `msg_key` to the resulting ciphertext.
+6. **Socket Write**: The `Connection` object associated with the target datacenter takes this final binary packet and writes it directly to the TCP socket.
+
+## Step 4: Reliability and Acknowledgements
+
+Sending the message is only half the story. MTProto includes mechanisms to guarantee delivery.
+
+- **Pending Queue**: After a message is sent, it is not forgotten. It's placed in a "pending acknowledgement" queue, indexed by its `message_id`.
+- **Acknowledgements (`msgs_ack`)**: The server, upon successfully receiving and processing a message, will send back a `msgs_ack` notification containing the `message_id` of the message it received.
+- **Confirmation**: When the C++ client receives an `ack`, it removes the corresponding message from the pending queue. This is when the Java layer is ultimately notified of success, and the clock icon turns into a checkmark.
+- **Resending**: The network thread periodically scans the pending queue. If an `ack` for a message has not been received within a certain timeout period, the MTProto engine will automatically re-package and resend the message, preventing it from being lost due to transient network issues. This robust resend logic is handled entirely within the C++ layer, abstracting the complexity away from the Java application logic.
