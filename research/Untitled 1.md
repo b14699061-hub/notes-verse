@@ -793,15 +793,10 @@ void ConnectionsManager::processRequestQueue(uint32_t connectionTypes, uint32_t 
 
    ```
 
-  
-
    - Time-based: Upper 32 bits = server time
-
    - Monotonic: Lower 32 bits = sequence counter
-
    - Ensures message ordering and prevents replay attacks
 
-  
 
 2. **Sequence Number Generation** (`ConnectionSession.cpp:24`):
 
