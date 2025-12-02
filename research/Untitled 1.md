@@ -302,22 +302,12 @@ public void sendMessage(SendMessageParams sendMessageParams) {
 
 
 **Key Operations**:
-
 1. **Message ID Generation** (`SendMessagesHelper.java:3888-4646`):
-
-  
-
    - Local message ID: Negative integer for unsent messages
-
    - Random ID: 64-bit random identifier for deduplication
-
    - Server-assigned ID: Replaced upon successful send
 
-  
-
 2. **Request Construction** (`SendMessagesHelper.java:4723-4781`):
-
-  
 
    ```java
 
@@ -358,8 +348,6 @@ public void sendMessage(SendMessageParams sendMessageParams) {
    }
 
    ```
-
-  
 
 3. **Request Submission** (`SendMessagesHelper.java:6952`):
 
@@ -403,23 +391,12 @@ public void sendMessage(SendMessageParams sendMessageParams) {
 
    ```
 
-  
-
 **State Management** (`SendMessagesHelper.java:6945`):
-
-  
-
 - Message stored in `sendingMessages` map
-
 - State tracked: `MESSAGE_SEND_STATE_SENDING`
-
 - Request ID stored in `newMsgObj.reqId` for cancellation
 
-  
-
 ---
-
-  
 
 ### 3.3 Layer 3: Network Manager (C++)
 
