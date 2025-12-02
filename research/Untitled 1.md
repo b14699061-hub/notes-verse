@@ -817,9 +817,7 @@ void ConnectionsManager::processRequestQueue(uint32_t connectionTypes, uint32_t 
    ```
 
    - Odd numbers: Client requests
-
    - Even numbers: Server responses
-
    - Enables response matching
 
   
