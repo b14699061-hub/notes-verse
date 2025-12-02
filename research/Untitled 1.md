@@ -518,29 +518,15 @@ void ConnectionsManager::checkPendingTasks() {
   
 
 **Key Properties**:
-
-  
-
 - Thread-safe via mutex (`pthread_mutex_t mutex`)
-
 - Wakeup mechanism via pipe (`pipeFd`) for event loop notification
-
 - Tasks executed synchronously on network thread
-
-  
 
 #### 3.3.3 Request Submission: `sendRequest()`
 
-  
-
 **File**: `ConnectionsManager.cpp:1917-2200` (approximate)
 
-  
-
 When `sendRequest()` is called from Java via JNI:
-
-  
-
 ```cpp
 
 int32_t ConnectionsManager::sendRequest(
@@ -641,23 +627,12 @@ int32_t ConnectionsManager::sendRequest(
 
 ```
 
-  
-
 **Request Queues** (`ConnectionsManager.h:216-218`):
-
-  
-
 - `waitingLoginRequests`: Requests waiting for authentication
-
 - `requestsQueue`: Ready-to-send requests
-
 - `runningRequests`: Requests in-flight (awaiting response)
 
-  
-
 #### 3.3.4 Request Processing: `processRequestQueue()`
-
-  
 
 **File**: `ConnectionsManager.cpp:2434-2800` (approximate)
 
