@@ -6,7 +6,6 @@
 
 The Telegram Android client implements a sophisticated multi-layer architecture for message transmission, spanning Java application code, JNI bridges, and native C++ network libraries. This analysis traces a single message send operation through the complete system stack, examining:
 
-  
 - Request construction and serialization
 - Asynchronous callback mechanisms
 - Task scheduling and execution
