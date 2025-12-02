@@ -403,19 +403,10 @@ public void sendMessage(SendMessageParams sendMessageParams) {
 
 **Location**: `TMessagesProj/jni/tgnet/ConnectionsManager.cpp`
 
-  
-
 The `ConnectionsManager` runs on a dedicated native thread (`ThreadProc`, line 345) and manages all network operations through an epoll-based event loop.
 
-  
-
 #### 3.3.1 Thread Architecture
-
-  
-
 **File**: `ConnectionsManager.cpp:345-362`
-
-  
 
 ```cpp
 
