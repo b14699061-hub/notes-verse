@@ -28,9 +28,7 @@ The Telegram Android client implements a sophisticated multi-layer architecture 
 ### 2.1 System Layers
 
   
-
 The send message flow traverses five distinct architectural layers:
-
   
 
 ```
@@ -178,8 +176,6 @@ class Request {
     TLObject *rawRequest;                     // Original request object
 
     std::unique_ptr<TLObject> rpcRequest;     // Serialized request
-
-  
 
     std::vector<int64_t> respondsToMessageIds; // Response tracking
 
