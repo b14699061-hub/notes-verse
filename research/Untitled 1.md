@@ -445,16 +445,9 @@ void *ConnectionsManager::ThreadProc(void *data) {
   
 
 **Event Loop** (`ConnectionsManager.cpp:96-200`):
-
-  
-
 - Uses `epoll_wait()` for I/O multiplexing
-
 - Processes socket events, timers, and task queue
-
 - Single-threaded execution ensures thread safety
-
-  
 
 #### 3.3.2 Task Queue System
 
