@@ -300,11 +300,8 @@ public void sendMessage(SendMessageParams sendMessageParams) {
 
 ```
 
-  
 
 **Key Operations**:
-
-  
 
 1. **Message ID Generation** (`SendMessagesHelper.java:3888-4646`):
 
