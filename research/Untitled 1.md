@@ -400,7 +400,6 @@ public void sendMessage(SendMessageParams sendMessageParams) {
 
 ### 3.3 Layer 3: Network Manager (C++)
 
-  
 
 **Location**: `TMessagesProj/jni/tgnet/ConnectionsManager.cpp`
 
