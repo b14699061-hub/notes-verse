@@ -772,15 +772,10 @@ void ConnectionsManager::processRequestQueue(uint32_t connectionTypes, uint32_t 
 
 ```
 
-  
 
 **Key Operations**:
 
-  
-
 1. **Message ID Generation** (`ConnectionsManager.cpp:131`):
-
-  
 
    ```cpp
 
