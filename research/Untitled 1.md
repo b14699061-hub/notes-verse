@@ -229,38 +229,19 @@ The UI layer captures user input and initiates the send process. While the exact
 3. Message parameters collected (text, peer, reply info, etc.)
 4. `SendMessagesHelper.sendMessage()` invoked
 
-  
-
 **Key Observation**: The UI layer is decoupled from network operations, delegating all network concerns to the application layer.
 
-  
-
 ---
-
-  
-
 ### 3.2 Layer 2: Application Layer (Java)
-
-  
 
 **Location**: `TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java`
 
-  
-
 #### 3.2.1 Message Creation: `sendMessage()`
-
-  
 
 **File**: `SendMessagesHelper.java:3816-4785`
 
-  
-
 The `sendMessage()` method is the primary entry point for message sending:
-
-  
-
 ```java
-
 public void sendMessage(SendMessageParams sendMessageParams) {
 
     // Extract parameters (line 3817-3853)
