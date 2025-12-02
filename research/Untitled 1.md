@@ -458,15 +458,9 @@ void *ConnectionsManager::ThreadProc(void *data) {
 
 #### 3.3.2 Task Queue System
 
-  
-
 **File**: `ConnectionsManager.cpp:309-312`, `187-198`
 
-  
-
-The task queue enables thread-safe communication from Java to native thread:
-
-  
+The task queue enables thread-safe communication from Java to native thread:  
 
 ```cpp
 
