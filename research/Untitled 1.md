@@ -223,8 +223,6 @@ typedef struct NetworkMessage {
 
 **Location**: `TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java`
 
-  
-
 The UI layer captures user input and initiates the send process. While the exact entry point varies by UI implementation, the flow typically involves:
 
   
