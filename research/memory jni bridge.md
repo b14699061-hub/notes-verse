@@ -395,11 +395,11 @@ std::unique_ptr<NativeByteBuffer> response; // 8 bytes
 
 │ NativeByteBuffer* buffer            │
 
-│ buffer->buffer = 0x7f8a1c000000 │
+│ buffer->buffer = 0x7f8a1c000000     │
 
-│ buffer->_position = 0 │
+│ buffer->_position = 0               │
 
-│ buffer->_limit = packet_size │
+│ buffer->_limit = packet_size        │
 
 └─────────────────────────────────────┘
 
@@ -687,7 +687,7 @@ error = true;
 
 ┌─────────────────────────────────────────┐
 
-│ TL_rpc_result object │
+│ TL_rpc_result object                    │
 
 ├─────────────────────────────────────────┤
 
