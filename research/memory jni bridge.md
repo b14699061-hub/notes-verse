@@ -340,11 +340,11 @@ std::unique_ptr<NativeByteBuffer> response; // 8 bytes
 
 ┌─────────────────────────────────────────┐
 
-│ TL_api_response object (heap) │
+│ TL_api_response object (heap)           │
 
 ├─────────────────────────────────────────┤
 
-│ +0x00: vtable pointer (8 bytes) │
+│ +0x00: vtable pointer (8 bytes)         │
 
 │ +0x08: response (unique_ptr, 8 bytes) │ → Points to NativeByteBuffer*
 
