@@ -346,11 +346,11 @@ std::unique_ptr<NativeByteBuffer> response; // 8 bytes
 
 │ +0x00: vtable pointer (8 bytes)         │
 
-│ +0x08: response (unique_ptr, 8 bytes) │ → Points to NativeByteBuffer*
+│ +0x08: response (unique_ptr, 8 bytes)   │ → Points to NativeByteBuffer*
 
-│ └─> Points to NativeByteBuffer │
+│ └─> Points to NativeByteBuffer          │
 
-│ └─> buffer points to raw data│
+│ └─> buffer points to raw data           │
 
 └─────────────────────────────────────────┘
 
@@ -380,21 +380,20 @@ std::unique_ptr<NativeByteBuffer> response; // 8 bytes
 
 ┌─────────────────────────────────────┐
 
-│ Encrypted Packet (TCP stream) │
+│ Encrypted Packet (TCP stream)       │
 
-│ [encrypted bytes...] │
+│ [encrypted bytes...]                │
 
 └─────────────────────────────────────┘
 
 │
-
 ▼
 
 2. NativeByteBuffer allocated (from BuffersStorage)
 
 ┌─────────────────────────────────────┐
 
-│ NativeByteBuffer* buffer │
+│ NativeByteBuffer* buffer            │
 
 │ buffer->buffer = 0x7f8a1c000000 │
 
